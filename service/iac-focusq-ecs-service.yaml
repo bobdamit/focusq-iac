@@ -80,7 +80,7 @@ Resources:
       ApiId: !Ref ApiGateway
       IntegrationType: HTTP_PROXY
       IntegrationMethod: ANY # Allow all methods
-      IntegrationUri: !Sub http://${ElasticIPAddress}:8888/{proxy} # Proxy all paths
+      IntegrationUri: !Sub http://${ElasticIPAddress}:8080/{proxy} # Proxy all paths
       PayloadFormatVersion: '1.0'
 
   WildcardRoute:
