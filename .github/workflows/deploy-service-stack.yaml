@@ -1,0 +1,86 @@
+
+name: Deploy Focusq ECS Service Stack
+
+on:
+  push:
+#    branches:
+#      - main
+    paths:
+      - service/iac-focusq-ecs-service.yaml
+      - .github/workflows/deploy-service-stack.yaml
+jobs:
+  deploy-ecs-service-iac:
+    runs-on: ubuntu-latest
+
+    env: 
+      VPC_NAME: rs-apps-0-vpc
+      PUB_SUBNET_NAME1: rs-apps-0-subnet-public-us-east-1a
+      PUB_SUBNET_NAME2: rs-apps-0-subnet-public-us-east-1b
+      PRIV_SUBNET_NAME1: rs-apps-0-subnet-private-us-east-1a
+      PRIV_SUBNET_NAME2: rs-apps-0-subnet-private-us-east-1b
+      CLUSTER_NAME: rs-apps-ecs-cluster-0
+      EIP_NAME: rs-ecs-elastic-ip-0
+      TEMPLATE_FILE: service/iac-focusq-ecs-service.yaml
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@master
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-east-1
+
+    - name: Resolve VPC ID
+      id: resolve-vpc
+      run: |
+        VPC_ID=$(aws ec2 describe-vpcs \
+          --filters "Name=tag:Name,Values=${VPC_NAME}" \
+          --query "Vpcs[0].VpcId" \
+          --output text)
+        echo "Resolved VPC ID: $VPC_ID"
+        echo "VPC_ID=$VPC_ID" >> $GITHUB_ENV
+
+    - name: Resolve Public subnet ID 1
+      id: subnet-public1
+      run: |
+        PUBLIC_SUBNET_ID1=$(aws ec2 describe-subnets \
+          --filters "Name=tag:Name,Values=${PUB_SUBNET_NAME1}" \
+          --query "Subnets[0].SubnetId" \
+          --output text)
+        echo "Resolved Private Subnet ID: $PUBLIC_SUBNET_ID1"
+        echo "PUBLIC_SUBNET_ID1=${PUBLIC_SUBNET_ID1}" >> $GITHUB_ENV
+
+    - name: Get EIP Address
+      id: get-eip
+      run: |
+          EIP=$(aws ec2 describe-addresses \
+            --filters "Name=tag:Name,Values=${EIP_NAME}" \
+            --query "Addresses[0].PublicIp" \
+            --output text)
+          
+          echo "EIP=$EIP" >> $GITHUB_ENV  # Save it as an environment variable
+          echo "Elastic IP: $EIP"
+
+    - name: Fetch Certificate ID by Domain
+      run: |
+        CERTIFICATE_ARN=$(aws acm list-certificates \
+        --query "CertificateSummaryList[?DomainName=='focusq.rocksci-apps.xyz'].CertificateArn" \
+        --output text)
+        echo "Found certificate: $CERTIFICATE_ARN"
+        echo "CERTIFICATE_ARN=$CERTIFICATE_ARN" >> $GITHUB_ENV
+
+    - name: Deploy FocusQ Service ECS Stack into Cluster
+      uses: aws-actions/aws-cloudformation-github-deploy@master
+      with:
+          name: focusq-ecs-service
+          template: ${{ env.TEMPLATE_FILE }}
+          parameter-overrides: >-
+             VPCId=${{ env.VPC_ID }},
+             PublicSubnetId1=${{ env.PUBLIC_SUBNET_ID1 }},
+             ClusterName=${{ env.CLUSTER_NAME }},
+             CertificateArn=${{ env.CERTIFICATE_ARN }},
+             ElasticIPAddress=${{ env.EIP }}
+          no-fail-on-empty-changeset: "1"

@@ -1,0 +1,119 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: ECS Service for Focusq
+
+Parameters:
+  VPCId:
+    Type: AWS::EC2::VPC::Id
+  PublicSubnetId1:
+    Type: AWS::EC2::Subnet::Id
+  ClusterName:
+    Type: String
+    Description: ECS Cluster Name
+    Default: rs-apps-ecs-cluster-0
+  CertificateArn:
+    Type: String
+    AllowedPattern: arn:aws:acm:.*
+    ConstraintDescription: Must be a valid ACM ARN from the same region as the current stack
+    Description: ARN of ACM SSL certificate for focusq.rocksci-apps.xyz
+  ElasticIPAddress:
+    Type: String
+    Description: EIP Address for the EC2 container instance
+
+Resources:
+
+  # per-app Task Definition for FocusQ
+  FocusqTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: focusq-task-family
+      NetworkMode: bridge
+      RequiresCompatibilities:
+        - EC2
+      ExecutionRoleArn: !ImportValue ECSExecutionRoleArn
+      TaskRoleArn: !ImportValue ECSTaskRoleArn
+      ContainerDefinitions:
+        - Name: focusq-task
+          Image: 053042079718.dkr.ecr.us-east-1.amazonaws.com/rockscience-focusq
+          Essential: true
+          # container-level memory and cpu params
+          MemoryReservation: 512
+          Memory: 1024
+          Cpu: 256
+          PortMappings:
+            - ContainerPort: 8080
+              HostPort: 8080
+              Protocol: tcp
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: /ecs/rs-apps-ecs-service-0
+              awslogs-region: us-east-1
+              awslogs-stream-prefix: ecs
+      Tags:
+        - Key: Project
+          Value: focusq
+
+  # per-app service for Focusq
+  FocusqService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: focusq-service
+      Cluster: !Ref ClusterName
+      LaunchType: EC2
+      SchedulingStrategy: REPLICA
+      DesiredCount: 1
+      TaskDefinition: !Ref FocusqTaskDefinition
+      Tags:
+        - Key: Project
+          Value: focusq
+
+  # Api gateway stuff
+  ApiGateway:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: FocusqAPI
+      ProtocolType: HTTP
+
+  HttpIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref ApiGateway
+      IntegrationType: HTTP_PROXY
+      IntegrationMethod: ANY # Allow all methods
+      IntegrationUri: !Sub http://${ElasticIPAddress}:8888/{proxy} # Proxy all paths
+      PayloadFormatVersion: '1.0'
+
+  WildcardRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref ApiGateway
+      RouteKey: ANY /{proxy+} # Wildcard route for all paths
+      Target: !Sub integrations/${HttpIntegration}
+
+  # Custom Domain for API Gateway
+  ApiCustomDomain:
+    Type: AWS::ApiGatewayV2::DomainName
+    Properties:
+      DomainName: api.focusq.rocksci-apps.xyz
+      DomainNameConfigurations:
+        - CertificateArn: !Ref CertificateArn
+          EndpointType: REGIONAL
+          SecurityPolicy: TLS_1_2
+
+
+  # Add this Stage resource
+  ApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref ApiGateway
+      StageName: '$default'  # Using $default stage name for HTTP APIs
+      AutoDeploy: true
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 1000
+        ThrottlingRateLimit: 1000
+  ApiMapping:
+    Type: AWS::ApiGatewayV2::ApiMapping
+    Properties:
+      ApiId: !Ref ApiGateway
+      DomainName: !Ref ApiCustomDomain
+      Stage: '$default'
